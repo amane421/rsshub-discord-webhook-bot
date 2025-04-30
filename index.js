@@ -1,25 +1,38 @@
+// index.js
 const express = require("express");
 const axios = require("axios");
+const Parser = require("rss-parser");
 require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 3000;
-
+const feedUrls = process.env.RSS_FEED_URL.split(",").map(url => url.trim());
 const webhookURL = process.env.DISCORD_WEBHOOK_URL;
-const feedURL = process.env.RSS_FEED_URL;
 
 app.get("/trigger", async (req, res) => {
   try {
-    const rssRes = await axios.get(feedURL);
-    const content = rssRes.data;
+    for (const url of feedUrls) {
+      const parser = new Parser();
+      const feed = await parser.parseURL(url);
+      const latest = feed.items[0];
+      const author = feed.title.replace(/^@/, "");
 
-    const message = {
-      content: "📰 新しい投稿が検出されました！\n```" + content.slice(0, 1500) + "```"
-    };
+      if (!latest) continue;
 
-    await axios.post(webhookURL, message);
-    console.log("✅ Discordに送信しました");
-    res.status(200).send("✅ 投稿完了");
+      const media = extractMedia(latest);
+      let content;
+
+      if (author === "Crypto_AI_chan_") {
+        content = extractSummary(latest.contentSnippet || latest.content || latest.title);
+      } else if (["merry__PT", "angorou7"].includes(author)) {
+        content = `📝 ${latest.contentSnippet || latest.title}`;
+      } else {
+        continue;
+      }
+
+      await sendToDiscord(content, latest.link, media);
+    }
+    res.send("✅ 投稿完了");
   } catch (err) {
     console.error("❌ エラー:", err.message);
     res.status(500).send("エラーが発生しました");
@@ -33,3 +46,25 @@ app.get("/", (req, res) => {
 app.listen(port, () => {
   console.log(`🚀 Server is running on port ${port}`);
 });
+
+function extractMedia(item) {
+  const enclosure = item.enclosure?.url ? [item.enclosure.url] : [];
+  const media = item.content?.match(/https?:\/\/[^\s]+\.(jpg|png|gif)/g) || [];
+  return [...new Set([...enclosure, ...media])];
+}
+
+function extractSummary(text) {
+  const title = text.match(/(.+?)[\n。]/)?.[1] || "タイトルなし";
+  const points = [...text.matchAll(/[-・●◆■]\s*(.+)/g)].map(m => `- ${m[1]}`);
+  const summary = text.match(/(まとめ|結論|要点)[：:\n\s]*(.+)/)?.[2] || "";
+
+  return `🌟 ${title}\n\n【重要ポイント】\n${points.join("\n") || "- 抜粋なし"}\n\n【まとめ】\n${summary || "- 特に記載なし"}`;
+}
+
+async function sendToDiscord(text, link, mediaUrls = []) {
+  const embeds = mediaUrls.map(url => ({ image: { url } }));
+  await axios.post(webhookURL, {
+    content: `${text}\n\n引用元：${link}`,
+    embeds
+  });
+}
