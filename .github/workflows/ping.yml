@@ -1,0 +1,13 @@
+name: Ping Render Trigger
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"  # 毎30分おきに実行
+  workflow_dispatch:        # 手動実行も可能
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /trigger endpoint
+        run: curl -s https://rsshub-discord-webhook-bot.onrender.com/trigger
