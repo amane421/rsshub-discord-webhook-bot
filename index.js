@@ -33,7 +33,7 @@ app.get("/trigger", async (req, res) => {
     }
     res.send("✅ 投稿完了");
   } catch (err) {
-    console.error("❌ エラー:", err.message);
+    console.error("❌ エラー:", err.response?.status || err.message);
     res.status(500).send("エラーが発生しました");
   }
 });
@@ -46,14 +46,12 @@ app.listen(port, () => {
   console.log(`🚀 Server is running on port ${port}`);
 });
 
-// --- メディア抽出関数 ---
 function extractMedia(item) {
   const enclosure = item.enclosure?.url ? [item.enclosure.url] : [];
-  const contentImages = item.content?.match(/https?:\/\/[^\s"]+\.(jpe?g|png|gif|webp)/gi) || [];
-  return [...new Set([...enclosure, ...contentImages])];
+  const media = item.content?.match(/https?:\/\/[^"]+\.(jpg|png|gif)/g) || [];
+  return [...new Set([...enclosure, ...media])];
 }
 
-// --- 要約関数 ---
 function extractSummary(text) {
   const title = text.match(/(.+?)[\n。]/)?.[1] || "タイトルなし";
   const points = [...text.matchAll(/[-・●◆■]\s*(.+)/g)].map(m => `- ${m[1]}`);
@@ -62,20 +60,10 @@ function extractSummary(text) {
   return `🌟 ${title}\n\n【重要ポイント】\n${points.join("\n") || "- 抜粋なし"}\n\n【まとめ】\n${summary || "- 特に記載なし"}`;
 }
 
-// --- Discord送信関数 ---
 async function sendToDiscord(text, link, mediaUrls = []) {
-  const embeds = mediaUrls
-    .filter(url => /\.(jpe?g|png|gif|webp)$/i.test(url))
-    .slice(0, 10)
-    .map(url => ({ image: { url } }));
-
-  const payload = {
-    content: `${text}\n\n引用元：${link}`
-  };
-
-  if (embeds.length > 0) {
-    payload.embeds = embeds;
-  }
-
-  await axios.post(webhookURL, payload);
+  const embeds = mediaUrls.map(url => ({ image: { url } }));
+  await axios.post(webhookURL, {
+    content: `${text}\n\n引用元：${link}`,
+    embeds
+  });
 }
