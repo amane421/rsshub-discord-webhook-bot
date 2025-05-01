@@ -68,4 +68,3 @@ async function sendToDiscord(text, link, mediaUrls = []) {
     embeds
   });
 }
-npm install rss-parser
