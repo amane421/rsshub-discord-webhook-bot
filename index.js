@@ -1,13 +1,13 @@
 const express = require("express");
 const axios = require("axios");
 const Parser = require("rss-parser");
-require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// カンマ区切りのRSSフィードURLを配列に変換
 const feedUrls = process.env.RSS_FEED_URL.split(",").map(url => url.trim());
 const webhookURL = process.env.DISCORD_WEBHOOK_URL;
-const sentLinks = new Set(); // メモリ上で送信済みのリンクを記録
 
 app.get("/trigger", async (req, res) => {
   try {
@@ -17,7 +17,7 @@ app.get("/trigger", async (req, res) => {
       const latest = feed.items[0];
       const author = feed.title.replace(/^@/, "");
 
-      if (!latest || sentLinks.has(latest.link)) continue;
+      if (!latest) continue;
 
       const media = extractMedia(latest);
       let content;
@@ -27,13 +27,11 @@ app.get("/trigger", async (req, res) => {
       } else if (["merry__PT", "angorou7"].includes(author)) {
         content = `📝 ${latest.contentSnippet || latest.title}`;
       } else {
-        continue;
+        continue; // 指定以外のアカウントはスキップ
       }
 
       await sendToDiscord(content, latest.link, media);
-      sentLinks.add(latest.link); // 送信済みとして記録
     }
-
     res.send("✅ 投稿完了");
   } catch (err) {
     console.error("❌ エラー:", err.message);
