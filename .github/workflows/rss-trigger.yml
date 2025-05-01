@@ -1,0 +1,14 @@
+name: Trigger RSS Bot
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # 30分おき
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Access /trigger endpoint
+        run: |
+          curl -X GET "${{ secrets.RSS_TRIGGER_URL }}"
