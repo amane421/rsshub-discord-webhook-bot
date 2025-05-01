@@ -1,15 +1,26 @@
 {
   "name": "rsshub-discord-webhook-bot",
   "version": "1.0.0",
-  "description": "A simple webhook-triggered bot to fetch RSS and send to Discord",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amane421/rsshub-discord-webhook-bot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/amane421/rsshub-discord-webhook-bot/issues"
+  },
+  "homepage": "https://github.com/amane421/rsshub-discord-webhook-bot#readme",
+  "description": "",
   "dependencies": {
-    "axios": "^1.6.0",
-    "dotenv": "^16.0.3",
-    "express": "^4.18.2"
+    "axios": "^1.9.0",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "rss-parser": "^3.13.0"
   }
 }
-pm install rss-parser
