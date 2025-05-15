@@ -1,69 +1,59 @@
-const express = require("express");
-const axios = require("axios");
-const Parser = require("rss-parser");
-require("dotenv").config();
+// index.js
+import fetch from 'node-fetch';
+import { parseFeed } from './utils.js';
+import feeds from './feeds.json' assert { type: 'json' };
+import fs from 'fs/promises';
 
-const app = express();
-const port = process.env.PORT || 3000;
-const feedUrls = process.env.RSS_FEED_URL.split(",").map(url => url.trim());
-const webhookURL = process.env.DISCORD_WEBHOOK_URL;
+const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+const CACHE_FILE = './posted_ids.json';
 
-app.get("/trigger", async (req, res) => {
+async function loadCache() {
   try {
-    for (const url of feedUrls) {
-      const parser = new Parser();
-      const feed = await parser.parseURL(url);
-      const latest = feed.items[0];
-      const author = feed.title.replace(/^@/, "");
-
-      if (!latest) continue;
-
-      const media = extractMedia(latest);
-      let content;
-
-      if (author === "Crypto_AI_chan_") {
-        content = extractSummary(latest.contentSnippet || latest.content || latest.title);
-      } else if (["merry__PT", "angorou7"].includes(author)) {
-        content = `📝 ${latest.contentSnippet || latest.title}`;
-      } else {
-        continue;
-      }
-
-      await sendToDiscord(content, latest.link, media);
-    }
-    res.send("✅ 投稿完了");
-  } catch (err) {
-    console.error("❌ エラー:", err.response?.status || err.message);
-    res.status(500).send("エラーが発生しました");
+    const data = await fs.readFile(CACHE_FILE, 'utf-8');
+    return new Set(JSON.parse(data));
+  } catch (e) {
+    return new Set();
   }
-});
-
-app.get("/", (req, res) => {
-  res.send("✅ Botは稼働中です");
-});
-
-app.listen(port, () => {
-  console.log(`🚀 Server is running on port ${port}`);
-});
-
-function extractMedia(item) {
-  const enclosure = item.enclosure?.url ? [item.enclosure.url] : [];
-  const media = item.content?.match(/https?:\/\/[^"]+\.(jpg|png|gif)/g) || [];
-  return [...new Set([...enclosure, ...media])];
 }
 
-function extractSummary(text) {
-  const title = text.match(/(.+?)[\n。]/)?.[1] || "タイトルなし";
-  const points = [...text.matchAll(/[-・●◆■]\s*(.+)/g)].map(m => `- ${m[1]}`);
-  const summary = text.match(/(まとめ|結論|要点)[：:\n\s]*(.+)/)?.[2] || "";
-
-  return `🌟 ${title}\n\n【重要ポイント】\n${points.join("\n") || "- 抜粋なし"}\n\n【まとめ】\n${summary || "- 特に記載なし"}`;
+async function saveCache(cache) {
+  await fs.writeFile(CACHE_FILE, JSON.stringify([...cache]), 'utf-8');
 }
 
-async function sendToDiscord(text, link, mediaUrls = []) {
-  const embeds = mediaUrls.map(url => ({ image: { url } }));
-  await axios.post(webhookURL, {
-    content: `${text}\n\n引用元：${link}`,
-    embeds
+async function postToDiscord(content, embed = null) {
+  const body = embed ? { embeds: [embed] } : { content };
+  await fetch(WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }
+
+async function main() {
+  const cache = await loadCache();
+
+  for (const feed of feeds) {
+    const { url, format } = feed;
+    const items = await parseFeed(url);
+
+    for (const item of items) {
+      if (cache.has(item.id)) continue;
+
+      if (format === 'raw') {
+        await postToDiscord(item.content);
+      } else {
+        const embed = {
+          title: item.title,
+          description: `${item.points}\n\n${item.summary}`,
+          url: item.link,
+        };
+        await postToDiscord(null, embed);
+      }
+
+      cache.add(item.id);
+    }
+  }
+  await saveCache(cache);
+}
+
+main();
