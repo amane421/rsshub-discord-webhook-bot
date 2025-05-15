@@ -1,25 +1,28 @@
-// index.js
-import fetch from 'node-fetch';
-import { parseFeed } from './utils.js';
-import feeds from './feeds.json' assert { type: 'json' };
-import fs from 'fs/promises';
+const fetch = require('node-fetch');
+const { parseFeed } = require('./utils.js');
+const fs = require('fs');
+const path = require('path');
 
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const CACHE_FILE = './posted_ids.json';
+const FEEDS = require('./feeds.json');
 
-async function loadCache() {
+// キャッシュ読み込み
+function loadCache() {
   try {
-    const data = await fs.readFile(CACHE_FILE, 'utf-8');
+    const data = fs.readFileSync(CACHE_FILE, 'utf-8');
     return new Set(JSON.parse(data));
   } catch (e) {
     return new Set();
   }
 }
 
-async function saveCache(cache) {
-  await fs.writeFile(CACHE_FILE, JSON.stringify([...cache]), 'utf-8');
+// キャッシュ保存
+function saveCache(cache) {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify([...cache]), 'utf-8');
 }
 
+// Discordに投稿
 async function postToDiscord(content, embed = null) {
   const body = embed ? { embeds: [embed] } : { content };
   await fetch(WEBHOOK_URL, {
@@ -29,10 +32,11 @@ async function postToDiscord(content, embed = null) {
   });
 }
 
+// メイン処理
 async function main() {
-  const cache = await loadCache();
+  const cache = loadCache();
 
-  for (const feed of feeds) {
+  for (const feed of FEEDS) {
     const { url, format } = feed;
     const items = await parseFeed(url);
 
@@ -44,7 +48,7 @@ async function main() {
       } else {
         const embed = {
           title: item.title,
-          description: `${item.points}\n\n${item.summary}`,
+          description: `${item.points || ''}\n\n${item.summary || ''}`.trim(),
           url: item.link,
         };
         await postToDiscord(null, embed);
@@ -53,7 +57,8 @@ async function main() {
       cache.add(item.id);
     }
   }
-  await saveCache(cache);
+
+  saveCache(cache);
 }
 
 main();
