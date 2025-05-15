@@ -17,7 +17,7 @@ async function checkFeeds() {
       const feedData = await parser.parseURL(feed.url);
 
       for (const item of feedData.items) {
-        const postId = item.link || item.guid;
+        const postId = item.link || item.guid
 
         if (!postedIds.has(postId)) {
           postedIds.add(postId);
