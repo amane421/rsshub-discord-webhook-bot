@@ -1,8 +1,10 @@
 const fetch = require('node-fetch');
+const express = require('express');
 const { fetchFeedItems } = require('./utils.js');
 const fs = require('fs');
 
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+const PORT = process.env.PORT || 10000;
 const CACHE_FILE = './posted_ids.json';
 const FEEDS = require('./feeds.json');
 
@@ -28,7 +30,7 @@ async function postToDiscord(content, embed = null) {
   });
 }
 
-async function main() {
+async function runBot() {
   const cache = loadCache();
 
   for (const feed of FEEDS) {
@@ -45,4 +47,17 @@ async function main() {
   saveCache(cache);
 }
 
-main();
+const app = express();
+
+app.get('/', (req, res) => {
+  res.send('Bot is running.');
+});
+
+app.get('/trigger', async (req, res) => {
+  await runBot();
+  res.send('RSS bot executed.');
+});
+
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
