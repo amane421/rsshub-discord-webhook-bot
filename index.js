@@ -1,63 +1,55 @@
-const fetch = require('node-fetch');
-const express = require('express');
-const { fetchFeedItems } = require('./utils.js');
 const fs = require('fs');
+const axios = require('axios');
+const Parser = require('rss-parser');
+require('dotenv').config();
 
-const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-const PORT = process.env.PORT || 10000;
+const parser = new Parser();
+const feeds = JSON.parse(fs.readFileSync('./feeds.json', 'utf-8'));
 const CACHE_FILE = './posted_ids.json';
-const FEEDS = require('./feeds.json');
 
-function loadCache() {
+function loadPostedIds() {
   try {
-    const data = fs.readFileSync(CACHE_FILE, 'utf-8');
-    return new Set(JSON.parse(data));
-  } catch (e) {
+    const raw = fs.readFileSync(CACHE_FILE, 'utf-8');
+    return new Set(JSON.parse(raw));
+  } catch {
     return new Set();
   }
 }
 
-function saveCache(cache) {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify([...cache]), 'utf-8');
+function savePostedIds(set) {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify([...set], null, 2));
 }
 
-async function postToDiscord(content, embed = null) {
-  const body = embed ? { embeds: [embed] } : { content };
-  await fetch(WEBHOOK_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+function formatContent(item, name) {
+  return `📰 **${name}**\n${item.title}\n${item.link}`;
 }
 
-async function runBot() {
-  const cache = loadCache();
+async function checkFeeds() {
+  const postedIds = loadPostedIds();
 
-  for (const feed of FEEDS) {
-    const items = await fetchFeedItems(feed);
+  for (const feed of feeds) {
+    try {
+      const feedData = await parser.parseURL(feed.url);
 
-    for (const item of items) {
-      if (cache.has(item.id)) continue;
+      for (const item of feedData.items) {
+        const postId = item.link || item.guid;
+        if (postedIds.has(postId)) continue;
 
-      await postToDiscord(item.content);
-      cache.add(item.id);
+        postedIds.add(postId);
+
+        const content = feed.raw
+          ? item.contentSnippet || item.title
+          : formatContent(item, feed.name);
+
+        await axios.post(feed.webhook, { content });
+        console.log(`✅ Posted: ${item.title}`);
+      }
+    } catch (err) {
+      console.error(`❌ Error checking feed ${feed.name}:`, err.message);
     }
   }
 
-  saveCache(cache);
+  savePostedIds(postedIds);
 }
 
-const app = express();
-
-app.get('/', (req, res) => {
-  res.send('Bot is running.');
-});
-
-app.get('/trigger', async (req, res) => {
-  await runBot();
-  res.send('RSS bot executed.');
-});
-
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-});
+checkFeeds();
