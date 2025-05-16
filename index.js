@@ -1,3 +1,11 @@
+const fs = require('fs');
+const axios = require('axios');
+const http = require('http');
+require('dotenv').config();
+
+// Renderが期待するポート番号を環境変数から取得
+const PORT = process.env.PORT || 10000;
+
 // Twitter API認証情報
 const TWITTER_BEARER_TOKEN = process.env.TWITTER_BEARER_TOKEN;
 
