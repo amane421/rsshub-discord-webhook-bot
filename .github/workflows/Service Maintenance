@@ -2,8 +2,8 @@ name: Service Maintenance
 on:
   schedule:
     - cron: '*/10 * * * *'  # 10分ごと（サービスをスリープさせない）
-    - cron: '0 * * * *'      # 毎時0分（フィードチェックをトリガー）
-  workflow_dispatch:  # 手動実行用
+    - cron: '0 */2 * * *'   # 2時間ごと（0時、2時、4時...の0分）にフィードチェック
+  workflow_dispatch:        # 手動実行用
 jobs:
   ping:
     runs-on: ubuntu-latest
@@ -14,8 +14,7 @@ jobs:
           curl -sS -w "\n%{http_code}" -o /dev/null https://rsshub-discord-webhook-bot.onrender.com/ || echo "Ping failed"
   trigger:
     runs-on: ubuntu-latest
-    # スケジュールが毎時0分、または手動実行の場合に実行
-    if: github.event.schedule == '0 * * * *' || github.event_name == 'workflow_dispatch'
+    if: github.event.schedule == '0 */2 * * *' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Trigger feed check
         run: |
