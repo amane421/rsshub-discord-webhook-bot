@@ -470,14 +470,26 @@ async function checkFeeds() {
   console.log("Feed check completed");
 }
 
-// 定期的にフィードをチェック
+// 定期的にフィードをチェック設定
 const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL) || 7200000; // デフォルトは2時間（推奨）
 console.log(`Will check feeds every ${CHECK_INTERVAL / 60000} minutes`);
 
-// 初回実行
-checkFeeds();
+// 起動直後に実行するかどうかを決定する環境変数（デフォルトは遅延実行）
+const RUN_IMMEDIATELY = process.env.RUN_IMMEDIATELY === 'true';
 
-// 定期実行を設定
+if (RUN_IMMEDIATELY) {
+  // 即時実行が指定された場合のみ直ちに実行
+  console.log('Running first check immediately as requested...');
+  checkFeeds();
+} else {
+  // 通常は30分待機してから初回実行（レート制限回避）
+  const INITIAL_DELAY = parseInt(process.env.INITIAL_DELAY) || 1800000; // デフォルト30分
+  console.log(`Scheduling first check in ${INITIAL_DELAY / 60000} minutes to avoid rate limits...`);
+  setTimeout(checkFeeds, INITIAL_DELAY);
+}
+
+// 定期実行の設定（初回実行とは別に設定）
+console.log(`Setting up regular check every ${CHECK_INTERVAL / 60000} minutes`);
 setInterval(checkFeeds, CHECK_INTERVAL);
 
 // HTTPサーバーを作成
