@@ -281,6 +281,16 @@ const server = http.createServer((req, res) => {
       }))
     };
     res.end(JSON.stringify(statusOutput, null, 2));
+  } else if (req.url === '/trigger') {
+    // トリガーエンドポイントを追加
+    console.log("Manual trigger received, checking feeds...");
+    checkFeeds().then(() => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('Feed check triggered successfully!');
+    }).catch(err => {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end(`Error triggering feed check: ${err.message}`);
+    });
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not Found');
