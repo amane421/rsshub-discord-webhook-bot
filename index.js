@@ -197,15 +197,13 @@ const rateLimits = {
     // 残りリクエスト数が少ない場合
     if (this.remainingRequests <= 5) {
       const now = Date.now();
-      const waitTime = this.resetTime - now + 1000; // 1秒の余裕
+      const waitTime = Math.max(60000, this.resetTime - now + 5000); // 最低1分、必要なら待機時間を延長
       
-      if (waitTime > 0) {
-        console.log(`Rate limit almost reached, waiting for ${Math.ceil(waitTime/1000)} seconds...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        // リセット後は制限をデフォルト値に戻す
-        this.remainingRequests = 75;
-        this.resetTime = Date.now() + 900000;
-      }
+      console.log(`Rate limit almost reached, waiting for ${Math.ceil(waitTime/1000)} seconds...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      // リセット後は制限をデフォルト値に戻す
+      this.remainingRequests = 75;
+      this.resetTime = Date.now() + 900000;
     }
     
     // リクエスト数を事前に減らしておく（安全策）
@@ -242,6 +240,9 @@ async function fetchTweetsFromAPI(username) {
     const userId = userResponse.data.data.id;
     console.log(`Found user ID for ${username}: ${userId}`);
 
+    // ユーザーID取得後、少し待機（レート制限対策）
+    await new Promise(resolve => setTimeout(resolve, 5000)); // 5秒待機
+    
     // レート制限をチェック（2回目のAPI呼び出し前）
     await rateLimits.checkAndWait();
     
@@ -429,14 +430,14 @@ async function checkFeeds() {
           console.log(`✅ Posted tweet: ${tweetId}`);
           
           // 連続投稿を避けるための短い遅延
-          await new Promise(resolve => setTimeout(resolve, 1500)); // 若干長めの1.5秒に延長
+          await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5秒の遅延
         } catch (webhookErr) {
           console.error(`❌ Error posting to Discord: ${webhookErr.message}`);
         }
       }
       
-      // 次のフィードを処理する前に少し待機（レート制限対策）
-      await new Promise(resolve => setTimeout(resolve, 5000)); // 5秒待機
+      // 次のフィードを処理する前に長めに待機（レート制限対策）
+      await new Promise(resolve => setTimeout(resolve, 60000)); // 60秒（1分）待機
       
     } catch (err) {
       console.error(`❌ Error processing feed ${feed.name}: ${err.message}`);
@@ -448,14 +449,19 @@ async function checkFeeds() {
       // エラー通知を送信
       await sendErrorNotification(feed, err.message);
       
-      // レート制限エラーの場合は少し長めに待機
+      // レート制限エラーの場合は長めに待機
       if (err.response && err.response.status === 429) {
-        const waitTime = Math.min(30000, Date.now() - rateLimits.resetTime); // 最大30秒
-        console.log(`Rate limit error, waiting for ${waitTime/1000} seconds before next feed...`);
+        // レート制限リセット時間がある場合はそれを使用、なければデフォルト値
+        const resetTime = err.response.headers['x-rate-limit-reset'] 
+          ? parseInt(err.response.headers['x-rate-limit-reset']) * 1000 
+          : Date.now() + 900000;
+          
+        const waitTime = Math.max(60000, resetTime - Date.now() + 5000); // 最低1分、リセット時間+5秒まで待機
+        console.log(`Rate limit error, waiting for ${Math.ceil(waitTime/1000)} seconds...`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
       } else {
         // その他のエラーの場合も少し待機
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        await new Promise(resolve => setTimeout(resolve, 30000)); // 30秒待機
       }
     }
   }
@@ -465,7 +471,7 @@ async function checkFeeds() {
 }
 
 // 定期的にフィードをチェック
-const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL) || 3600000; // デフォルトは1時間
+const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL) || 7200000; // デフォルトは2時間（推奨）
 console.log(`Will check feeds every ${CHECK_INTERVAL / 60000} minutes`);
 
 // 初回実行
