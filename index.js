@@ -9,6 +9,15 @@ const PORT = process.env.PORT || 10000;
 // Twitter API認証情報
 const TWITTER_BEARER_TOKEN = process.env.TWITTER_BEARER_TOKEN;
 
+// 環境変数からストレージパスを取得（Renderの場合は永続ディレクトリを使用）
+const STORAGE_PATH = process.env.PERSISTENT_STORAGE_DIR || './';
+
+// 重要なファイルのパス
+const CACHE_FILE = `${STORAGE_PATH}/posted_ids.json`;
+const STATUS_FILE = `${STORAGE_PATH}/status.json`;
+const USER_ID_CACHE_FILE = `${STORAGE_PATH}/user_ids.json`;
+const LOCK_FILE = `${STORAGE_PATH}/check_in_progress.lock`;
+
 // feeds.jsonを読み込む
 let feeds;
 try {
@@ -18,9 +27,6 @@ try {
   console.error('Error loading feeds.json:', err.message);
   feeds = [];
 }
-
-const CACHE_FILE = './posted_ids.json';
-const STATUS_FILE = './status.json';
 
 // ステータス情報をロード
 function loadStatus() {
@@ -64,6 +70,74 @@ function savePostedIds(set) {
     fs.writeFileSync(CACHE_FILE, JSON.stringify([...set], null, 2));
   } catch (err) {
     console.error(`Error saving posted IDs: ${err.message}`);
+  }
+}
+
+// ユーザーIDキャッシュをロード
+function loadUserIdCache() {
+  try {
+    if (fs.existsSync(USER_ID_CACHE_FILE)) {
+      return JSON.parse(fs.readFileSync(USER_ID_CACHE_FILE, 'utf-8'));
+    }
+    return {};
+  } catch (err) {
+    console.error(`Error loading user ID cache: ${err.message}`);
+    return {};
+  }
+}
+
+// ユーザーIDキャッシュを保存
+function saveUserIdCache(cache) {
+  try {
+    fs.writeFileSync(USER_ID_CACHE_FILE, JSON.stringify(cache, null, 2));
+  } catch (err) {
+    console.error(`Error saving user ID cache: ${err.message}`);
+  }
+}
+
+// ロックファイルをチェック
+function isLocked() {
+  if (fs.existsSync(LOCK_FILE)) {
+    try {
+      // ロックファイルの作成時間を確認
+      const lockData = fs.readFileSync(LOCK_FILE, 'utf-8');
+      const lockTime = parseInt(lockData);
+      const now = Date.now();
+      
+      // 30分以上前のロックは無効とみなす（クラッシュ対策）
+      if (now - lockTime > 30 * 60 * 1000) {
+        console.log("Found stale lock file. Removing it.");
+        fs.unlinkSync(LOCK_FILE);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error(`Error checking lock file: ${err.message}`);
+      return false;
+    }
+  }
+  return false;
+}
+
+// ロックを作成
+function createLock() {
+  try {
+    fs.writeFileSync(LOCK_FILE, Date.now().toString());
+    return true;
+  } catch (err) {
+    console.error(`Error creating lock file: ${err.message}`);
+    return false;
+  }
+}
+
+// ロックを解除
+function releaseLock() {
+  try {
+    if (fs.existsSync(LOCK_FILE)) {
+      fs.unlinkSync(LOCK_FILE);
+    }
+  } catch (err) {
+    console.error(`Error releasing lock: ${err.message}`);
   }
 }
 
@@ -194,12 +268,12 @@ const rateLimits = {
 
   // レート制限に達したか確認
   async checkAndWait() {
-    // 残りリクエスト数が少ない場合
-    if (this.remainingRequests <= 5) {
+    // 残りリクエスト数が少ない場合（より保守的な値に設定）
+    if (this.remainingRequests <= 20) {
       const now = Date.now();
-      const waitTime = Math.max(60000, this.resetTime - now + 5000); // 最低1分、必要なら待機時間を延長
+      const waitTime = Math.max(300000, this.resetTime - now + 10000); // 最低5分、必要なら待機時間を延長
       
-      console.log(`Rate limit almost reached, waiting for ${Math.ceil(waitTime/1000)} seconds...`);
+      console.log(`Rate limit approaching, waiting for ${Math.ceil(waitTime/1000)} seconds...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
       // リセット後は制限をデフォルト値に戻す
       this.remainingRequests = 75;
@@ -218,30 +292,44 @@ async function fetchTweetsFromAPI(username) {
   }
 
   try {
-    // レート制限をチェック
-    await rateLimits.checkAndWait();
+    // ユーザーIDキャッシュをロード
+    const userIdCache = loadUserIdCache();
+    let userId;
     
-    // まずユーザーIDを取得
-    const userResponse = await axios.get(`https://api.twitter.com/2/users/by/username/${username}`, {
-      headers: {
-        'Authorization': `Bearer ${TWITTER_BEARER_TOKEN}`
+    // キャッシュにユーザーIDがあるか確認
+    if (userIdCache[username]) {
+      userId = userIdCache[username];
+      console.log(`Using cached user ID for ${username}: ${userId}`);
+    } else {
+      // レート制限をチェック
+      await rateLimits.checkAndWait();
+      
+      // まずユーザーIDを取得
+      const userResponse = await axios.get(`https://api.twitter.com/2/users/by/username/${username}`, {
+        headers: {
+          'Authorization': `Bearer ${TWITTER_BEARER_TOKEN}`
+        }
+      });
+
+      // レート制限情報を更新
+      if (userResponse.headers) {
+        rateLimits.update(userResponse.headers);
       }
-    });
 
-    // レート制限情報を更新
-    if (userResponse.headers) {
-      rateLimits.update(userResponse.headers);
+      if (!userResponse.data.data) {
+        throw new Error(`User not found: ${username}`);
+      }
+
+      userId = userResponse.data.data.id;
+      console.log(`Found user ID for ${username}: ${userId}`);
+      
+      // ユーザーIDをキャッシュに保存
+      userIdCache[username] = userId;
+      saveUserIdCache(userIdCache);
     }
-
-    if (!userResponse.data.data) {
-      throw new Error(`User not found: ${username}`);
-    }
-
-    const userId = userResponse.data.data.id;
-    console.log(`Found user ID for ${username}: ${userId}`);
 
     // ユーザーID取得後、少し待機（レート制限対策）
-    await new Promise(resolve => setTimeout(resolve, 5000)); // 5秒待機
+    await new Promise(resolve => setTimeout(resolve, 2000)); // 2秒待機
     
     // レート制限をチェック（2回目のAPI呼び出し前）
     await rateLimits.checkAndWait();
@@ -354,124 +442,179 @@ async function sendErrorNotification(feed, errorMessage) {
 
 // フィードをチェックする処理
 async function checkFeeds() {
-  const postedIds = loadPostedIds();
-  const status = loadStatus();
-  const recentTexts = []; // 最近投稿したテキストを追跡（重複防止用）
+  // 同時実行を防ぐためのロックチェック
+  if (isLocked()) {
+    console.log("Another check process is already running. Skipping.");
+    return;
+  }
   
-  console.log(`Starting to check ${feeds.length} feeds...`);
-
-  for (const feed of feeds) {
-    console.log(`Processing feed: ${feed.name}`);
+  // ロックを作成
+  if (!createLock()) {
+    console.error("Failed to create lock. Aborting check.");
+    return;
+  }
+  
+  try {
+    const postedIds = loadPostedIds();
+    const status = loadStatus();
+    const recentTexts = []; // 最近投稿したテキストを追跡（重複防止用）
     
-    try {
-      // ユーザー名を抽出
-      const username = extractTwitterUsername(feed.url);
+    console.log(`Starting to check ${feeds.length} feeds...`);
+
+    for (const feed of feeds) {
+      console.log(`Processing feed: ${feed.name}`);
       
-      if (!username) {
-        console.error(`❌ Could not extract username from URL: ${feed.url}`);
-        continue;
-      }
+      // 再試行カウンター
+      let retryCount = 0;
+      const maxRetries = 3;
       
-      console.log(`Checking tweets for: ${username}`);
-      
-      // Twitter APIからツイートを取得
-      const feedData = await fetchTweetsFromAPI(username);
-      
-      // 最終チェック時刻を更新
-      status[`${feed.name}_last_check`] = Date.now();
-      status[`${feed.name}_error_count`] = 0; // エラーカウントをリセット
-      saveStatus(status);
-      
-      if (!feedData.items || feedData.items.length === 0) {
-        console.log(`No new tweets found for ${username}`);
-        continue;
-      }
-      
-      console.log(`Found ${feedData.items.length} tweets for ${username}`);
-      
-      // ツイートを処理（新しい順に処理）
-      const sortedItems = feedData.items.sort((a, b) => {
-        return new Date(b.created_at) - new Date(a.created_at);
-      });
-      
-      for (const tweet of sortedItems) {
-        const tweetId = tweet.id;
-        
-        // IDベースの重複チェック
-        if (postedIds.has(tweetId)) {
-          console.log(`Tweet already posted (ID check): ${tweetId}`);
-          continue;
-        }
-        
-        // 内容ベースの重複チェック
-        if (isSimilarTweet(tweet.text, recentTexts)) {
-          console.log(`Similar tweet already posted (content check): ${tweetId}`);
-          postedIds.add(tweetId); // 重複としてマーク
-          continue;
-        }
-        
-        // 投稿済みに追加
-        postedIds.add(tweetId);
-        recentTexts.push(tweet.text); // 重複チェック用に保存
-        
-        // 最大50件のテキストを保持（メモリ節約）
-        if (recentTexts.length > 50) {
-          recentTexts.shift();
-        }
-        
-        // Discord用のコンテンツをフォーマット
-        const content = feed.raw
-          ? tweet.text
-          : formatContent(tweet, feed.name);
-        
+      while (retryCount < maxRetries) {
         try {
-          // Discordに投稿
-          await axios.post(feed.webhook, { content });
-          console.log(`✅ Posted tweet: ${tweetId}`);
+          // ユーザー名を抽出
+          const username = extractTwitterUsername(feed.url);
           
-          // 連続投稿を避けるための短い遅延
-          await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5秒の遅延
-        } catch (webhookErr) {
-          console.error(`❌ Error posting to Discord: ${webhookErr.message}`);
+          if (!username) {
+            console.error(`❌ Could not extract username from URL: ${feed.url}`);
+            break;
+          }
+          
+          console.log(`Checking tweets for: ${username}`);
+          
+          // Twitter APIからツイートを取得
+          const feedData = await fetchTweetsFromAPI(username);
+          
+          // 最終チェック時刻を更新
+          status[`${feed.name}_last_check`] = Date.now();
+          status[`${feed.name}_error_count`] = 0; // エラーカウントをリセット
+          saveStatus(status);
+          
+          if (!feedData.items || feedData.items.length === 0) {
+            console.log(`No new tweets found for ${username}`);
+            break;
+          }
+          
+          console.log(`Found ${feedData.items.length} tweets for ${username}`);
+          
+          // ツイートを処理（新しい順に処理）
+          const sortedItems = feedData.items.sort((a, b) => {
+            return new Date(b.created_at) - new Date(a.created_at);
+          });
+          
+          for (const tweet of sortedItems) {
+            const tweetId = tweet.id;
+            
+            // IDベースの重複チェック
+            if (postedIds.has(tweetId)) {
+              console.log(`Tweet already posted (ID check): ${tweetId}`);
+              continue;
+            }
+            
+            // 内容ベースの重複チェック
+            if (isSimilarTweet(tweet.text, recentTexts)) {
+              console.log(`Similar tweet already posted (content check): ${tweetId}`);
+              postedIds.add(tweetId); // 重複としてマーク
+              continue;
+            }
+            
+            // 投稿済みに追加
+            postedIds.add(tweetId);
+            recentTexts.push(tweet.text); // 重複チェック用に保存
+            
+            // 最大50件のテキストを保持（メモリ節約）
+            if (recentTexts.length > 50) {
+              recentTexts.shift();
+            }
+            
+            // Discord用のコンテンツをフォーマット
+            const content = feed.raw
+              ? tweet.text
+              : formatContent(tweet, feed.name);
+            
+            try {
+              // Discordに投稿
+              await axios.post(feed.webhook, { content });
+              console.log(`✅ Posted tweet: ${tweetId}`);
+              
+              // 連続投稿を避けるための短い遅延
+              await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5秒の遅延
+            } catch (webhookErr) {
+              console.error(`❌ Error posting to Discord: ${webhookErr.message}`);
+            }
+          }
+          
+          // 処理成功したらループを抜ける
+          break;
+          
+        } catch (err) {
+          retryCount++;
+          console.error(`❌ Error processing feed ${feed.name} (attempt ${retryCount}/${maxRetries}): ${err.message}`);
+          
+          // エラーカウントを増やす
+          status[`${feed.name}_error_count`] = (status[`${feed.name}_error_count`] || 0) + 1;
+          saveStatus(status);
+          
+          if (retryCount >= maxRetries) {
+            // 最大再試行回数に達したらエラー通知を送信
+            await sendErrorNotification(feed, err.message);
+            break;
+          }
+          
+          // レート制限エラーの場合は長めに待機
+          if (err.response && err.response.status === 429) {
+            // レート制限リセット時間がある場合はそれを使用、なければデフォルト値
+            const resetTime = err.response.headers['x-rate-limit-reset'] 
+              ? parseInt(err.response.headers['x-rate-limit-reset']) * 1000 
+              : Date.now() + 900000;
+              
+            const waitTime = Math.max(60000, resetTime - Date.now() + 5000); // 最低1分、リセット時間+5秒まで待機
+            console.log(`Rate limit error, waiting for ${Math.ceil(waitTime/1000)} seconds before retry...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+          } else {
+            // その他のエラーの場合も少し待機
+            const waitTime = 30000 * retryCount; // リトライごとに待機時間を増やす
+            console.log(`Waiting for ${waitTime/1000} seconds before retry...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+          }
         }
       }
       
-      // 次のフィードを処理する前に長めに待機（レート制限対策）
-      await new Promise(resolve => setTimeout(resolve, 60000)); // 60秒（1分）待機
+                // 次のフィードを処理する前に長めに待機（レート制限対策）
+      console.log(`Waiting 10 seconds before processing next feed...`);
+      await new Promise(resolve => setTimeout(resolve, 10000)); // 10秒待機
+    }
+
+    savePostedIds(postedIds);
+    console.log("Feed check completed");
+  } finally {
+    // 処理完了後にロックを解除
+    releaseLock();
+  }
+}
+
+// 古いIDを定期的にクリーンアップする処理
+function cleanupOldPostedIds() {
+  try {
+    if (fs.existsSync(CACHE_FILE)) {
+      const raw = fs.readFileSync(CACHE_FILE, 'utf-8');
+      const ids = JSON.parse(raw);
       
-    } catch (err) {
-      console.error(`❌ Error processing feed ${feed.name}: ${err.message}`);
-      
-      // エラーカウントを増やす
-      status[`${feed.name}_error_count`] = (status[`${feed.name}_error_count`] || 0) + 1;
-      saveStatus(status);
-      
-      // エラー通知を送信
-      await sendErrorNotification(feed, err.message);
-      
-      // レート制限エラーの場合は長めに待機
-      if (err.response && err.response.status === 429) {
-        // レート制限リセット時間がある場合はそれを使用、なければデフォルト値
-        const resetTime = err.response.headers['x-rate-limit-reset'] 
-          ? parseInt(err.response.headers['x-rate-limit-reset']) * 1000 
-          : Date.now() + 900000;
-          
-        const waitTime = Math.max(60000, resetTime - Date.now() + 5000); // 最低1分、リセット時間+5秒まで待機
-        console.log(`Rate limit error, waiting for ${Math.ceil(waitTime/1000)} seconds...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-      } else {
-        // その他のエラーの場合も少し待機
-        await new Promise(resolve => setTimeout(resolve, 30000)); // 30秒待機
+      // 最大1000件に制限
+      if (ids.length > 1000) {
+        const trimmedIds = ids.slice(-1000); // 最新の1000件を保持
+        fs.writeFileSync(CACHE_FILE, JSON.stringify(trimmedIds, null, 2));
+        console.log(`Cleaned up posted IDs, kept most recent 1000 of ${ids.length}`);
       }
     }
+  } catch (err) {
+    console.error(`Error cleaning up old posted IDs: ${err.message}`);
   }
-
-  savePostedIds(postedIds);
-  console.log("Feed check completed");
+  
+  // 24時間ごとに実行
+  setTimeout(cleanupOldPostedIds, 24 * 60 * 60 * 1000);
 }
 
 // 定期的にフィードをチェック設定
-const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL) || 7200000; // デフォルトは2時間（推奨）
+const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL) || 7200000; // デフォルトは2時間
 console.log(`Will check feeds every ${CHECK_INTERVAL / 60000} minutes`);
 
 // 起動直後に実行するかどうかを決定する環境変数（デフォルトは遅延実行）
@@ -482,8 +625,8 @@ if (RUN_IMMEDIATELY) {
   console.log('Running first check immediately as requested...');
   checkFeeds();
 } else {
-  // 通常は30分待機してから初回実行（レート制限回避）
-  const INITIAL_DELAY = parseInt(process.env.INITIAL_DELAY) || 1800000; // デフォルト30分
+  // 通常は1時間待機してから初回実行（レート制限回避）
+  const INITIAL_DELAY = parseInt(process.env.INITIAL_DELAY) || 3600000; // デフォルト1時間
   console.log(`Scheduling first check in ${INITIAL_DELAY / 60000} minutes to avoid rate limits...`);
   setTimeout(checkFeeds, INITIAL_DELAY);
 }
@@ -491,6 +634,9 @@ if (RUN_IMMEDIATELY) {
 // 定期実行の設定（初回実行とは別に設定）
 console.log(`Setting up regular check every ${CHECK_INTERVAL / 60000} minutes`);
 setInterval(checkFeeds, CHECK_INTERVAL);
+
+// 定期的なクリーンアップ処理を開始
+cleanupOldPostedIds();
 
 // HTTPサーバーを作成
 const server = http.createServer((req, res) => {
@@ -508,11 +654,15 @@ const server = http.createServer((req, res) => {
         name: feed.name,
         url: feed.url,
         lastCheck: status[`${feed.name}_last_check`] || 0,
-        errorCount: status[`${feed.name}_error_count`] || 0
+        errorCount: status[`${feed.name}_error_count`] || 0,
+        lastError: status[`${feed.name}_last_error`] || 0
       })),
       rateLimit: {
         remainingRequests: rateLimits.remainingRequests,
         resetTime: new Date(rateLimits.resetTime).toISOString()
+      },
+      lock: {
+        isLocked: isLocked()
       }
     };
     res.end(JSON.stringify(statusOutput, null, 2));
