@@ -18,13 +18,57 @@ const STATUS_FILE = `${STORAGE_PATH}/status.json`;
 const USER_ID_CACHE_FILE = `${STORAGE_PATH}/user_ids.json`;
 const LOCK_FILE = `${STORAGE_PATH}/check_in_progress.lock`;
 
-// feeds.jsonを読み込む
-let feeds;
+// TwitterのURLからユーザー名を抽出する関数（先に定義）
+function extractTwitterUsername(url) {
+  const patterns = [
+    /twitter\.com\/([^\/\?]+)/i,
+    /x\.com\/([^\/\?]+)/i,
+    /nitter\.[^\/]+\/([^\/\?]+)/i
+  ];
+  
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      // @から始まる場合は除去
+      return match[1].startsWith('@') ? match[1].substring(1) : match[1];
+    }
+  }
+  
+  return null;
+}
+
+// 既存の環境変数からフィード設定を構築
+let feeds = [];
 try {
-  feeds = JSON.parse(fs.readFileSync('./feeds.json', 'utf-8'));
-  console.log(`Loaded ${feeds.length} feeds from configuration`);
+  if (process.env.FEED_CONFIG) {
+    // FEED_CONFIG環境変数がある場合はそれを使用
+    feeds = JSON.parse(process.env.FEED_CONFIG);
+    console.log(`Loaded ${feeds.length} feeds from FEED_CONFIG environment variable`);
+  } else if (process.env.RSS_FEED_URL && process.env.DISCORD_WEBHOOK_URL) {
+    // 既存の環境変数から構築
+    const feedUrls = process.env.RSS_FEED_URL.split(',').map(url => url.trim());
+    
+    feeds = feedUrls.map(url => {
+      // URLからname部分を抽出（例: https://twitter.com/username -> username）
+      const username = extractTwitterUsername(url) || url;
+      return {
+        url: url,
+        name: username,
+        webhook: process.env.DISCORD_WEBHOOK_URL,
+        // angorou7のみraw: true、他はfalse
+        raw: username === 'angorou7'
+      };
+    });
+    console.log(`Created ${feeds.length} feeds from RSS_FEED_URL environment variable`);
+  } else if (fs.existsSync('./feeds.json')) {
+    // 環境変数がない場合はファイルから（ローカル開発用）
+    feeds = JSON.parse(fs.readFileSync('./feeds.json', 'utf-8'));
+    console.log(`Loaded ${feeds.length} feeds from feeds.json file`);
+  } else {
+    console.warn('No feed configuration found');
+  }
 } catch (err) {
-  console.error('Error loading feeds.json:', err.message);
+  console.error('Error loading feeds:', err.message);
   feeds = [];
 }
 
@@ -139,25 +183,6 @@ function releaseLock() {
   } catch (err) {
     console.error(`Error releasing lock: ${err.message}`);
   }
-}
-
-// TwitterのURLからユーザー名を抽出
-function extractTwitterUsername(url) {
-  const patterns = [
-    /twitter\.com\/([^\/\?]+)/i,
-    /x\.com\/([^\/\?]+)/i,
-    /nitter\.[^\/]+\/([^\/\?]+)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match && match[1]) {
-      // @から始まる場合は除去
-      return match[1].startsWith('@') ? match[1].substring(1) : match[1];
-    }
-  }
-  
-  return null;
 }
 
 // Discordに送信するコンテンツをフォーマット
@@ -578,7 +603,7 @@ async function checkFeeds() {
         }
       }
       
-                // 次のフィードを処理する前に長めに待機（レート制限対策）
+      // 次のフィードを処理する前に長めに待機（レート制限対策）
       console.log(`Waiting 10 seconds before processing next feed...`);
       await new Promise(resolve => setTimeout(resolve, 10000)); // 10秒待機
     }
@@ -625,7 +650,7 @@ if (RUN_IMMEDIATELY) {
   console.log('Running first check immediately as requested...');
   checkFeeds();
 } else {
-  // 通常は1時間待機してから初回実行（レート制限回避）
+  // 通常は環境変数の設定に従って待機してから初回実行（レート制限回避）
   const INITIAL_DELAY = parseInt(process.env.INITIAL_DELAY) || 3600000; // デフォルト1時間
   console.log(`Scheduling first check in ${INITIAL_DELAY / 60000} minutes to avoid rate limits...`);
   setTimeout(checkFeeds, INITIAL_DELAY);
